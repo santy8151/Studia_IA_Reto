@@ -1,0 +1,10 @@
+torch>=2.2
+numpy
+pandas
+scikit-learn
+scipy
+sdv>=1.15          # CTGAN + GaussianCopula
+opacus>=1.4        # DP-SGD
+stellar-sdk>=9     # anclaje opcional de evidencias
+requests
+pytest
