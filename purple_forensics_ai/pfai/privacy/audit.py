@@ -32,8 +32,11 @@ def fidelity(real: pd.DataFrame, synth: pd.DataFrame) -> dict:
     La distancia de variación total (TV) está entre 0 (idéntico) y 1.
     """
     _validate_frames(real, synth)
-    numeric = [c for c in real.select_dtypes(include="number").columns if c in synth.columns
-               and pd.api.types.is_numeric_dtype(synth[c])]
+    numeric = [
+        c
+        for c in real.select_dtypes(include="number").columns
+        if c in synth.columns and pd.api.types.is_numeric_dtype(synth[c])
+    ]
     categorical = [c for c in real.columns if c not in numeric]
 
     ks_values = []
@@ -56,8 +59,17 @@ def fidelity(real: pd.DataFrame, synth: pd.DataFrame) -> dict:
         real_dist = real[column].value_counts(normalize=True, dropna=False)
         synth_dist = synth[column].value_counts(normalize=True, dropna=False)
         categories = real_dist.index.union(synth_dist.index)
-        tv_values.append(float((real_dist.reindex(categories, fill_value=0)
-                                - synth_dist.reindex(categories, fill_value=0)).abs().sum() / 2))
+        tv_values.append(
+            float(
+                (
+                    real_dist.reindex(categories, fill_value=0)
+                    - synth_dist.reindex(categories, fill_value=0)
+                )
+                .abs()
+                .sum()
+                / 2
+            )
+        )
 
     return {
         "ks_mean": ks_mean,
@@ -66,23 +78,41 @@ def fidelity(real: pd.DataFrame, synth: pd.DataFrame) -> dict:
     }
 
 
-def utility_tstr(synth: pd.DataFrame, real_test: pd.DataFrame, label: str) -> dict:
-    """Train-on-Synthetic, Test-on-Real (TSTR), con esquema alineado."""
-    if label not in synth.columns or label not in real_test.columns:
+def _train_eval_rf(train_df: pd.DataFrame, test_df: pd.DataFrame, label: str) -> dict:
+    if label not in train_df.columns or label not in test_df.columns:
         raise ValueError(f"La etiqueta {label!r} debe existir en ambos conjuntos")
-    if synth.empty or real_test.empty:
-        raise ValueError("synth y real_test deben contener al menos una fila")
-    Xs, ys = synth.drop(columns=[label]), synth[label]
-    Xr, yr = real_test.drop(columns=[label]), real_test[label]
+    if train_df.empty or test_df.empty:
+        raise ValueError("train_df y test_df deben contener al menos una fila")
+
+    Xs, ys = train_df.drop(columns=[label]), train_df[label]
+    Xr, yr = test_df.drop(columns=[label]), test_df[label]
     Xs, Xr = pd.get_dummies(Xs), pd.get_dummies(Xr)
     Xs, Xr = Xs.align(Xr, join="outer", axis=1, fill_value=0)
-    model = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=0)
-    pred = model.fit(Xs, ys).predict(Xr)
+    Xs = Xs.fillna(0)
+    Xr = Xr.fillna(0)
+
+    if ys.nunique(dropna=True) < 2:
+        const_val = ys.iloc[0]
+        pred = np.repeat(const_val, len(yr))
+    else:
+        model = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=0)
+        pred = model.fit(Xs, ys).predict(Xr)
+
     return {
         "f1": float(f1_score(yr, pred, average="macro", zero_division=0)),
         "precision": float(precision_score(yr, pred, average="macro", zero_division=0)),
         "recall": float(recall_score(yr, pred, average="macro", zero_division=0)),
     }
+
+
+def utility_tstr(synth: pd.DataFrame, real_test: pd.DataFrame, label: str) -> dict:
+    """Train-on-Synthetic, Test-on-Real (TSTR), con esquema alineado."""
+    return _train_eval_rf(synth, real_test, label)
+
+
+def utility_trtr(real_train: pd.DataFrame, real_test: pd.DataFrame, label: str) -> dict:
+    """Train-on-Real, Test-on-Real (TRTR), línea base superior de utilidad."""
+    return _train_eval_rf(real_train, real_test, label)
 
 
 def _feature_matrix(values, name: str) -> np.ndarray:
@@ -116,6 +146,41 @@ def membership_inference_auc(X_train, X_holdout, X_synth) -> float:
     return float(roc_auc_score(y_true, -np.r_[d_in, d_out]))
 
 
+def distance_to_closest_record(X_train, X_holdout, X_synth) -> dict:
+    """Calcula DCR (Distance to Closest Record) y NNDR (Nearest Neighbor Distance Ratio).
+
+    Valores de DCR muy cercanos a 0 o un DCR(train) mucho menor que DCR(holdout)
+    sugieren riesgo de memorización respecto al conjunto de entrenamiento.
+    """
+    train = _feature_matrix(X_train, "X_train")
+    holdout = _feature_matrix(X_holdout, "X_holdout")
+    synthetic = _feature_matrix(X_synth, "X_synth")
+    if train.shape[1] != holdout.shape[1] or train.shape[1] != synthetic.shape[1]:
+        raise ValueError("X_train, X_holdout y X_synth deben tener igual número de columnas")
+
+    scaler = StandardScaler().fit(train)
+    train_s, holdout_s, synth_s = (scaler.transform(x) for x in (train, holdout, synthetic))
+
+    k_tr = min(2, len(train_s))
+    nn_tr = NearestNeighbors(n_neighbors=k_tr).fit(train_s)
+    dist_tr, _ = nn_tr.kneighbors(synth_s)
+
+    nn_ho = NearestNeighbors(n_neighbors=1).fit(holdout_s)
+    dist_ho, _ = nn_ho.kneighbors(synth_s)
+
+    d1_tr = dist_tr[:, 0]
+    d1_ho = dist_ho[:, 0]
+    nndr = float(np.mean(d1_tr / np.maximum(dist_tr[:, 1], 1e-8))) if k_tr == 2 else None
+    ho_mean = float(np.mean(d1_ho))
+    return {
+        "dcr_train_mean": float(np.mean(d1_tr)),
+        "dcr_train_p05": float(np.quantile(d1_tr, 0.05)),
+        "dcr_holdout_mean": ho_mean,
+        "dcr_ratio": float(np.mean(d1_tr) / max(ho_mean, 1e-8)),
+        "nndr_train_mean": nndr,
+    }
+
+
 def duplicate_rate(real: pd.DataFrame, synth: pd.DataFrame) -> float:
     """Proporción de filas sintéticas idénticas a una fila real."""
     _validate_frames(real, synth)
@@ -128,27 +193,83 @@ def duplicate_rate(real: pd.DataFrame, synth: pd.DataFrame) -> float:
     return float(len(duplicates) / len(synthetic_rows))
 
 
-def full_report(real_train, real_holdout, synth, label=None) -> dict:
-    """Genera métricas de fidelidad, utilidad opcional y riesgo empírico.
+def full_report(real_train: pd.DataFrame, real_holdout: pd.DataFrame, synth: pd.DataFrame, label: str | None = None) -> dict:
+    """Genera métricas de fidelidad, utilidad opcional (TSTR/TRTR) y riesgo empírico.
 
-    La comprobación de membresía utiliza solo columnas numéricas y es una
-    aproximación; si no existen, ``mia_auc`` queda como ``None``.
+    La comprobación de membresía y DCR utilizan solo columnas numéricas sin NaN;
+    si no existen columnas numéricas evaluables, ``mia_auc`` y ``dcr`` quedan como ``None``.
     """
     _validate_frames(real_train, synth)
     _validate_frames(real_holdout, synth)
-    report = {
+    report: dict = {
         "fidelity": fidelity(real_train, synth),
         "duplicates": duplicate_rate(real_train, synth),
     }
     if label is not None:
-        report["utility"] = utility_tstr(synth, real_holdout, label)
-
-    numeric = [c for c in real_train.select_dtypes(include="number").columns if c in synth.columns
-               and c in real_holdout.columns and pd.api.types.is_numeric_dtype(synth[c])]
-    if numeric:
-        report["mia_auc"] = membership_inference_auc(
-            real_train[numeric].to_numpy(), real_holdout[numeric].to_numpy(), synth[numeric].to_numpy()
+        tstr = utility_tstr(synth, real_holdout, label)
+        trtr = utility_trtr(real_train, real_holdout, label)
+        report["utility"] = tstr
+        report["utility_baseline"] = trtr
+        report["utility_retention"] = (
+            float(tstr["f1"] / trtr["f1"]) if trtr["f1"] > 0 else None
         )
+
+    numeric = [
+        c
+        for c in real_train.select_dtypes(include="number").columns
+        if c in synth.columns
+        and c in real_holdout.columns
+        and pd.api.types.is_numeric_dtype(synth[c])
+        and pd.api.types.is_numeric_dtype(real_holdout[c])
+    ]
+    if numeric:
+        tr_num = real_train[numeric].dropna().to_numpy()
+        ho_num = real_holdout[numeric].dropna().to_numpy()
+        sy_num = synth[numeric].dropna().to_numpy()
+        if len(tr_num) and len(ho_num) and len(sy_num):
+            report["mia_auc"] = membership_inference_auc(tr_num, ho_num, sy_num)
+            report["dcr"] = distance_to_closest_record(tr_num, ho_num, sy_num)
+        else:
+            report["mia_auc"] = None
+            report["dcr"] = None
     else:
         report["mia_auc"] = None
+        report["dcr"] = None
     return report
+
+
+def privacy_utility_verdict(report: dict, privacy_budget: dict | None = None) -> dict:
+    """Resume de forma interpretable el balance utilidad vs. riesgo de privacidad."""
+    notes: list[str] = []
+    fid = report.get("fidelity", {})
+    ks = fid.get("ks_mean")
+    dups = report.get("duplicates", 0.0)
+    mia = report.get("mia_auc")
+    retention = report.get("utility_retention")
+
+    if ks is not None and ks > 0.25:
+        notes.append(f"KS medio alto ({ks:.3f}): fidelidad marginal mejorable.")
+    if dups > 0.0:
+        notes.append(f"Se detectaron {dups:.1%} filas sintéticas idénticas al entrenamiento.")
+    if mia is not None and mia > 0.65:
+        notes.append(f"MIA AUC={mia:.3f} (>0.65): riesgo empírico de inferencia de membresía.")
+    if retention is not None and retention < 0.75:
+        notes.append(f"Retención de utilidad TSTR/TRTR baja ({retention:.1%}).")
+
+    formal_dp = bool(privacy_budget and privacy_budget.get("epsilon_spent") is not None)
+    if formal_dp:
+        notes.append(
+            f"Garantía formal DP-SGD registrada: ε={privacy_budget['epsilon_spent']:.2f}, δ={privacy_budget['delta']}."
+        )
+    else:
+        notes.append("Sin garantía formal (ε, δ): las métricas empíricas no garantizan privacidad diferencial.")
+
+    return {
+        "formal_dp": formal_dp,
+        "empirical_leakage_risk": (
+            "high" if (dups > 0.05 or (mia is not None and mia > 0.65))
+            else "moderate" if (dups > 0.0 or (mia is not None and mia > 0.58))
+            else "low"
+        ),
+        "notes": notes,
+    }

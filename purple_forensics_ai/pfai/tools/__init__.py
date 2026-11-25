@@ -1,0 +1,38 @@
+"""Herramientas forenses y de verificación de red con guardas de alcance."""
+from pfai.tools.forensics import (
+    OutOfScope,
+    Scope,
+    ToolUnavailable,
+    forensic_capabilities,
+    nmap_service_scan,
+    sha256_file,
+    tshark_capture,
+    tshark_conversations,
+    tshark_conversations_parsed,
+    tshark_protocol_hierarchy,
+    tshark_protocol_hierarchy_parsed,
+    tsk_extract_file,
+    tsk_list_files,
+    tsk_list_files_parsed,
+    tsk_partitions,
+    tsk_partitions_parsed,
+)
+
+__all__ = [
+    "OutOfScope",
+    "Scope",
+    "ToolUnavailable",
+    "forensic_capabilities",
+    "nmap_service_scan",
+    "sha256_file",
+    "tshark_capture",
+    "tshark_conversations",
+    "tshark_conversations_parsed",
+    "tshark_protocol_hierarchy",
+    "tshark_protocol_hierarchy_parsed",
+    "tsk_extract_file",
+    "tsk_list_files",
+    "tsk_list_files_parsed",
+    "tsk_partitions",
+    "tsk_partitions_parsed",
+]

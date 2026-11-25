@@ -2,7 +2,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pfai.privacy.audit import duplicate_rate, fidelity, full_report, membership_inference_auc, utility_tstr
+from pfai.privacy.audit import (
+    distance_to_closest_record,
+    duplicate_rate,
+    fidelity,
+    full_report,
+    membership_inference_auc,
+    privacy_utility_verdict,
+    utility_trtr,
+    utility_tstr,
+)
 
 
 def test_fidelity_reports_numeric_and_categorical_metrics():
@@ -11,7 +20,7 @@ def test_fidelity_reports_numeric_and_categorical_metrics():
     report = fidelity(real, synth)
     assert 0 <= report["ks_mean"] <= 1
     assert report["corr_mae"] == 0.0
-    assert report["categorical_tv_mean"] == pytest.approx(1 / 6)
+    assert report["categorical_tv_mean"] == pytest.approx(1 / 3)
 
 
 def test_fidelity_handles_categorical_only_frames():
@@ -43,9 +52,42 @@ def test_duplicate_rate_and_full_report_are_json_friendly():
     report = full_report(real, holdout, synth, label="label")
     assert report["duplicates"] == 0.5
     assert set(report["utility"]) == {"f1", "precision", "recall"}
+    assert set(report["utility_baseline"]) == {"f1", "precision", "recall"}
     assert np.isfinite(report["mia_auc"])
+    assert set(report["dcr"]) == {
+        "dcr_train_mean",
+        "dcr_train_p05",
+        "dcr_holdout_mean",
+        "dcr_ratio",
+        "nndr_train_mean",
+    }
 
 
-def test_tstr_rejects_missing_label():
+def test_tstr_rejects_missing_label_and_handles_single_class():
     with pytest.raises(ValueError, match="etiqueta"):
         utility_tstr(pd.DataFrame({"x": [1]}), pd.DataFrame({"x": [2]}), "label")
+
+    synth_one = pd.DataFrame({"x": [1.0, 2.0], "label": ["ok", "ok"]})
+    real_test = pd.DataFrame({"x": [1.5, 9.0], "label": ["ok", "bad"]})
+    res = utility_tstr(synth_one, real_test, "label")
+    assert 0.0 <= res["f1"] <= 1.0
+    trtr = utility_trtr(real_test, real_test, "label")
+    assert trtr["f1"] == pytest.approx(1.0)
+
+
+def test_dcr_and_verdict_summarize_dp_status():
+    train = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+    holdout = np.array([[5.0, 5.0], [6.0, 6.0]])
+    synth = np.array([[0.05, 0.05], [1.2, 1.2]])
+    dcr = distance_to_closest_record(train, holdout, synth)
+    assert dcr["dcr_train_mean"] < dcr["dcr_holdout_mean"]
+
+    verdict_nodp = privacy_utility_verdict({"fidelity": {"ks_mean": 0.1}, "duplicates": 0.0, "mia_auc": 0.52})
+    assert verdict_nodp["formal_dp"] is False
+    assert verdict_nodp["empirical_leakage_risk"] == "low"
+
+    verdict_dp = privacy_utility_verdict(
+        {"fidelity": {"ks_mean": 0.1}, "duplicates": 0.0, "mia_auc": 0.52},
+        privacy_budget={"epsilon_spent": 4.2, "delta": 1e-5},
+    )
+    assert verdict_dp["formal_dp"] is True

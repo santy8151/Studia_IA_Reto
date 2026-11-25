@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "purple-forensics-ai"
+version = "0.2.0"
+description = "Infraestructura de ciberseguridad Purple Team con IA (LVGAN, MoE, PPML/DP-SGD), orquestación multiagente, análisis forense, sandboxing y ledger en Stellar."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scikit-learn>=1.4",
+    "scipy>=1.11",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+privacy = [
+    "sdv>=1.15",
+    "opacus>=1.4",
+]
+integrity = [
+    "stellar-sdk>=9",
+]
+dev = [
+    "pytest>=8.0",
+]
+all = [
+    "sdv>=1.15",
+    "opacus>=1.4",
+    "stellar-sdk>=9",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+pfai = "pfai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pfai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
